@@ -1,0 +1,107 @@
+name: Auto Convert Domains
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'accelerated-domains.china.conf'
+      - 'convert_domains.py'
+
+  workflow_dispatch:
+    inputs:
+      force_update:
+        description: 'Force update even if no changes detected'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  convert-domains:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 2
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Check if auto-commit
+      id: check_commit
+      run: |
+        LAST_COMMIT_MSG=$(git log -1 --pretty=%B)
+        if [[ "$LAST_COMMIT_MSG" == *"[auto-convert]"* ]]; then
+          echo "skip=true" >> $GITHUB_OUTPUT
+          echo "Auto-commit detected, skipping"
+        else
+          echo "skip=false" >> $GITHUB_OUTPUT
+          echo "Not an auto-commit, proceeding"
+        fi
+
+    - name: Set up Python
+      if: steps.check_commit.outputs.skip == 'false'
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+
+    - name: Run conversion script
+      if: steps.check_commit.outputs.skip == 'false'
+      run: |
+        echo "Starting domain format conversion..."
+        python convert_domains.py
+
+        if [ $? -eq 0 ] && [ -f "accelerated-domains.china.txt" ]; then
+          echo "Conversion completed successfully"
+          echo "Line count: $(wc -l < accelerated-domains.china.txt)"
+        else
+          echo "Conversion failed"
+          exit 1
+        fi
+
+    - name: Check for changes
+      if: steps.check_commit.outputs.skip == 'false'
+      id: check_changes
+      run: |
+        git add accelerated-domains.china.txt
+        if git diff --staged --quiet; then
+          echo "has_changes=false" >> $GITHUB_OUTPUT
+          echo "No changes detected"
+        else
+          echo "has_changes=true" >> $GITHUB_OUTPUT
+          echo "Changes detected"
+        fi
+
+        if [ "${{ github.event.inputs.force_update }}" = "true" ]; then
+          echo "has_changes=true" >> $GITHUB_OUTPUT
+          echo "Force update requested"
+        fi
+
+    - name: Commit and push changes
+      if: steps.check_commit.outputs.skip == 'false' && (steps.check_changes.outputs.has_changes == 'true' || github.event.inputs.force_update == 'true')
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+
+        DOMAIN_COUNT=$(wc -l < accelerated-domains.china.txt)
+        git commit -m "[auto-convert] Auto update domain list format - $DOMAIN_COUNT domains"
+        git push
+        echo "Successfully committed and pushed changes"
+
+    - name: Summary
+      if: steps.check_commit.outputs.skip == 'false'
+      run: |
+        if [ -f "accelerated-domains.china.txt" ]; then
+          DOMAIN_COUNT=$(wc -l < accelerated-domains.china.txt)
+          echo "Domain conversion completed: $DOMAIN_COUNT domains processed"
+
+          if [ "${{ steps.check_changes.outputs.has_changes }}" = "true" ]; then
+            echo "Changes committed and pushed to repository"
+          else
+            echo "No changes detected, nothing to commit"
+          fi
+        else
+          echo "Conversion failed"
+        fi
